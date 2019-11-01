@@ -7,6 +7,7 @@
   - [Binaries](#binaries)
   - [QEMU](#qemu)
 - [Usage](#usage)
+- [FAQ](#faq)
 - [Compiling from Source](#compiling-from-source)
   - [Toolchain](#toolchain)
   - [console](#console)
@@ -74,7 +75,7 @@ systems should also be compatible.
 
 First, clone this repository recursively and install its dependencies.
 
-1. `sudo apt-get install busybox-static fakeroot git kpartx netcat-openbsd nmap python-psycopg2 python3-psycopg2 snmp uml-utilities util-linux vlan`
+1. `sudo apt-get install busybox-static fakeroot git dmsetup kpartx netcat-openbsd nmap python-psycopg2 python3-psycopg2 snmp uml-utilities util-linux vlan`
 2. `git clone --recursive https://github.com/firmadyne/firmadyne.git`
 
 ## Extractor
@@ -83,13 +84,12 @@ The extractor depends on the [binwalk](https://github.com/devttys0/binwalk)
 tool, so we need to install that and its dependencies.
 
 1. `git clone https://github.com/devttys0/binwalk.git`
-2. `sudo ./binwalk/deps.sh`
-3. `sudo python ./binwalk/setup.py install`
+2. `cd binwalk`
+2. `sudo ./deps.sh`
+3. `sudo python ./setup.py install`
   * For Python 2.x, `sudo apt-get install python-lzma`
 4. `sudo -H pip install git+https://github.com/ahupp/python-magic`
-5. Instead of [upstream jefferson](https://github.com/sviehb/jefferson), it is
-recommended to install our [jefferson fork](https://github.com/firmadyne/jefferson),
-which supports extraction of additional file and compression types.
+5. `sudo -H pip install git+https://github.com/sviehb/jefferson`.
 6. Optionally, instead of [upstream sasquatch](https://github.com/devttys0/sasquatch),
 our [sasquatch fork](https://github.com/firmadyne/sasquatch) can be used to
 prevent false positives by making errors fatal.
@@ -112,6 +112,8 @@ To download our pre-built binaries for all components, run the following script:
 Alternatively, refer to the instructions [below](#compiling-from-source) to compile from source.
 
 ## QEMU
+
+**Only QEMU <= 2.12 is supported! See bugs [#96](https://github.com/firmadyne/firmadyne/issues/96) and [#119](https://github.com/firmadyne/firmadyne/issues/119) for more information.**
 
 To use [QEMU](http://wiki.qemu.org/Main_Page) provided by your distribution:
 
@@ -142,17 +144,31 @@ recommended), or [upstream qemu](https://github.com/qemu/qemu).
    * `./scripts/inferNetwork.sh 1`
 8. Emulate firmware `1` with the inferred network configuration. This will modify the configuration of the host system by creating a TAP device and adding a route.
    * `./scratch/1/run.sh`
-9. The system should be available over the network, and is ready for analysis. Kernel messages are logged to `./scratch/1/qemu.final.serial.log`.
+9. The system should be available over the network, and is ready for analysis. Kernel messages are mirrored to `./scratch/1/qemu.final.serial.log`.
    * `./analyses/snmpwalk.sh 192.168.0.100`
    * `./analyses/webAccess.py 1 192.168.0.100 log.txt`
    * `mkdir exploits; ./analyses/runExploits.py -t 192.168.0.100 -o exploits/exploit -e x` (requires Metasploit Framework)
    * `sudo nmap -O -sV 192.168.0.100`
-10. To access a console in the firmware, use a presupplied debug run script to access the default console (no network access), modify the network-enabled `run.sh` script to provide console access, or use the second console provided by the framework.
-   * `./scripts/run-debug.sh 1`
-   * `nc -U /tmp/qemu.1.S1`
+10. The default console should be automatically connected to the terminal. Note that `Ctrl-c` is sent to the guest; use the QEMU monitor command `Ctrl-a + x` to terminate emulation. For the sample firmware above, you will first need to delete the file `/etc/securetty` from the filesystem to login as `root` with password `password`.
 11. The following scripts can be used to mount/unmount the filesystem of firmware `1`. Ensure that the emulated firmware is not running, and remember to unmount before performing any other operations.
    * `sudo ./scripts/mount.sh 1`
    * `sudo ./scripts/umount.sh 1`
+
+# FAQ
+## `run.sh` is not generated
+This is a common error that is encountered when the network configuration is unable to be inferred. Follow the checklist below to figure out the cause.
+
+1. `inferNetwork.sh`: Did this script find any network interfaces (e.g. `Interfaces: [br0, 192.168.0.1]`)? If so, this is a bug; please report it. Otherwise, continue below.
+2. `qemu.initial.serial.log`: Does this file end with `Unable to mount root fs on unknown-block(8,1)`? If so, the initial filesystem image was not generated correctly using `kpartx`. Try deleting the scratch directory corresponding to this firmware image, and restart at `makeImage.sh`. Otherwise, the initial emulation didn't produce any useful instrumentation. Try increasing the timeout in `inferNetwork.sh` from `60` to `120` and restarting at `inferNetwork.sh`.
+3. `qemu.initial.serial.log`: Did the `init` process crash, and is this preceded by a failed NVRAM operation (e.g. `nvram_get_buf: Unable to open key <foo>`)? If so, see the FAQ entry below.
+
+## A process crashed, e.g. `do_page_fault() #2: sending SIGSEGV for invalid read access from 00000000`
+It is likely that the process requested a NVRAM entry that FIRMADYNE does not have a default value for. This can be fixed by manually adding a source for NVRAM entries to `NVRAM_DEFAULTS_PATH`, an entry to `NVRAM_DEFAULTS`, or a file to `OVERRIDE_POINT` in `libnvram`. For more details, see the [documentation for libnvram](https://github.com/firmadyne/libnvram). Note that the first two options involve modifying `config.h`, which will require recompilation of `libnvram`.
+
+## How do I debug the emulated firmware?
+1. With full-system QEMU emulation, compile a statically-linked `gdbserver` for the target architecture, copy it into the filesystem, attach it to the process of interest, and connect remotely using `gdb-multiarch`. You'll need a cross-compile toolchain; either use the `crossbuild-essential-*` packages supplied by Debian/Ubuntu, build it from scratch using e.g. `buildroot`, or look for GPL sources and/or pre-compiled binaries online. If you have IDA Pro, you can use IDA's pre-compiled debug servers (located in the `dbgsrv` subdirectory of the install), though they are not GDB-compatible.
+2. With full-system QEMU emulation, pass the `-s -S` parameters to QEMU and connect to the stub using `target remote localhost:1234` from `gdb-multiarch`. However, the debugger won't automatically know where kernel and userspace is in memory, so you may need to manually do `add-symbol-file` in `gdb` and break around `try_to_run_init_process()` in the kernel.
+2. With user-mode QEMU emulation, `chroot` into the firmware image (optional), set `LD_LIBRARY_PATH` to contain the FIRMADYNE libnvram, and pass both the `-L` parameter with the correct path to the firmware `/lib` directory, and the binary of interest to QEMU. This is easiest to debug, because you can attach directly to the process using `gdb-multiarch`, and interact directly with the process, but the system state may not be accurate since the host kernel is being used. It is also somewhat insecure, because the emulated firmware can access the host filesystem and interact with the host kernel.
 
 # Compiling from Source
 
@@ -173,7 +189,7 @@ toolchain; others have not been tested.
 To simplify the process of building cross-compilation toolchains with musl, we
 recommend using the [musl-cross](https://github.com/GregorR/musl-cross) project.
 Follow the below steps to build these toolchains from source, or alternatively
-click [here](https://cmu.box.com/s/hnpvf1n72uccnhyfe307rc2nb9rfxmjp) to
+click [here](https://cmu.boxcn.net/s/hnpvf1n72uccnhyfe307rc2nb9rfxmjp) to
 download our pre-built toolchains.
 
 1. `git clone https://github.com/GregorR/musl-cross.git`
@@ -188,6 +204,7 @@ download our pre-built toolchains.
    * `MUSL_DEFAULT_VERSION=1.1.12`
    * `MUSL_GIT_VERSION=615629bd6fcd6ddb69ad762e679f088c7bd878e2`
    * `LANG_CXX=no`
+   * `GCC_BUILTIN_PREREQS=yes`
 
 3. Modify or set the following variables in `config.sh`
    * `CFLAGS="-fPIC"`
@@ -258,10 +275,10 @@ download our pre-built toolchains.
 
 During development, the database was stored on a PostgreSQL server.
 
-## [Data](https://cmu.box.com/s/hnpvf1n72uccnhyfe307rc2nb9rfxmjp)
+## Data
 
 Although we cannot redistribute binary firmware, the data used for our
-experiments is available [here](https://cmu.box.com/s/hnpvf1n72uccnhyfe307rc2nb9rfxmjp).
+experiments is available [here](https://cmu.boxcn.net/s/hnpvf1n72uccnhyfe307rc2nb9rfxmjp).
 
 ## [Schema](https://github.com/firmadyne/firmadyne/blob/master/database/schema)
 

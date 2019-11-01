@@ -24,7 +24,7 @@ if check_root; then
 fi
 
 if [ $# -gt 1 ]; then
-    if [ check_arch ${2} -eq 1 ]; then
+    if check_arch "${2}"; then
         echo "Error: Invalid architecture!"
         exit 1
     fi
@@ -47,8 +47,6 @@ IMAGE=`get_fs ${IID}`
 IMAGE_DIR=`get_fs_mount ${IID}`
 CONSOLE=`get_console ${ARCH}`
 LIBNVRAM=`get_nvram ${ARCH}`
-
-DEVICE=/dev/mapper/loop0p1
 
 echo "----Copying Filesystem Tarball----"
 mkdir -p "${WORK_DIR}"
@@ -73,7 +71,7 @@ echo "----Creating Partition Table----"
 echo -e "o\nn\np\n1\n\n\nw" | /sbin/fdisk "${IMAGE}"
 
 echo "----Mounting QEMU Image----"
-kpartx -a -v "${IMAGE}"
+DEVICE=$(get_device "$(kpartx -a -s -v "${IMAGE}")")
 sleep 1
 
 echo "----Creating Filesystem----"
@@ -121,4 +119,4 @@ sync
 umount "${DEVICE}"
 kpartx -d "${IMAGE}"
 losetup -d "${DEVICE}" &>/dev/null
-dmsetup remove loop0p1 &>/dev/null
+dmsetup remove $(basename "$DEVICE") &>/dev/null
